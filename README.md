@@ -162,9 +162,22 @@ If you encounter issues or have feature requests, please open an issue on the re
 MIT License
 
 ---
+## 🙏 Acknowledgements
 
+This project was inspired by and references ideas from several excellent open-source annotation and commenting plugins.
+
+Special thanks to the following projects and their contributors:
+
+- https://github.com/catmuse/HiNote  
+  For inspiration on inline annotation interactions, document highlighting workflows, and reading-note experiences.
+
+- https://github.com/mofukuru/SideNote  
+  For ideas related to sidebar-based annotation management, comment organization, and user interaction design.
+
+We sincerely appreciate the open-source community for sharing ideas, implementations, and user experience explorations that helped shape this project.
+---
 ## 📬 Contact
 
 Feel free to join the community for discussions, updates, and bug reports:
 
-* **rednote**: `9417036368`
+* **QQ Group**: `1094620986`
