@@ -152,6 +152,8 @@ class SideNoteView extends ItemView {
     }
 
     public renderView() {
+        this.plugin.unloadMarkdownRenderComponentsUnder?.(this.containerEl);
+
         // 修改点 2：在清空前保存滚动位置
         const currentContainer = this.containerEl.querySelector(".sidenote-comments-list-wrapper");
         if (currentContainer) {
@@ -360,11 +362,14 @@ class SideNoteView extends ItemView {
                         if (el !== menuContainer) el.classList.remove('visible');
                     });
                     menuContainer.classList.toggle("visible");
+                    if (menuContainer.classList.contains("visible")) {
+                        setTimeout(() => {
+                            document.addEventListener("click", (e) => {
+                                if (!menuButton.contains(e.target as Node)) menuContainer.classList.remove("visible");
+                            }, { once: true, capture: true });
+                        }, 0);
+                    }
                 };
-
-                document.addEventListener("click", (e) => {
-                    if (!menuButton.contains(e.target as Node)) menuContainer.classList.remove("visible");
-                }, { once: true, capture: true });
             });
         } else {
             const emptyStateEl = container.createDiv("sidenote-empty-state");
@@ -442,7 +447,9 @@ class SideNoteView extends ItemView {
     }
 
     getState(): CustomViewState { return { filePath: this.file ? this.file.path : null }; }
-    onunload() {}
+    onunload() {
+        this.plugin.unloadMarkdownRenderComponentsUnder?.(this.containerEl);
+    }
 }
 
 async function switchToSideNoteView(app: App) {
@@ -612,6 +619,7 @@ class CommentModal extends Modal {
         updateBtn.onclick = () => this.submitForm();
 
         this.onClose = () => {
+            this.plugin.unloadMarkdownRenderComponentsUnder?.(this.contentEl);
             document.querySelectorAll('.sidenote-selection-toolbar').forEach(el => el.remove());
         };
         
@@ -805,10 +813,13 @@ export default class SideNote extends Plugin {
     private isSaving: boolean = false;
     private editorViews: Set<EditorView> = new Set();
     private renderedTableHighlightTimers: number[] = [];
+    private markdownRenderComponents: Map<HTMLElement, Component> = new Map();
 
     public async renderCommentContent(markdown: string, container: HTMLElement, sourcePath: string) {
+        this.unloadMarkdownRenderComponentsUnder(container);
         const component = new Component();
         component.load();
+        this.markdownRenderComponents.set(container, component);
         await MarkdownRenderer.renderMarkdown(markdown, container, sourcePath, component);
         container.addEventListener("click", (e) => {
             const target = e.target as HTMLElement;
@@ -869,6 +880,15 @@ export default class SideNote extends Plugin {
                         img.style.display = 'block';
                     }
                  }
+            }
+        });
+    }
+
+    public unloadMarkdownRenderComponentsUnder(root: HTMLElement) {
+        this.markdownRenderComponents.forEach((component, container) => {
+            if (!container.isConnected || container === root || root.contains(container)) {
+                component.unload();
+                this.markdownRenderComponents.delete(container);
             }
         });
     }
@@ -1757,6 +1777,20 @@ export default class SideNote extends Plugin {
         }));
     }
 
+    onunload() {
+        if (this.orphanNoticeTimer) {
+            clearTimeout(this.orphanNoticeTimer);
+            this.orphanNoticeTimer = null;
+        }
+        this.pendingOrphans = [];
+        this.renderedTableHighlightTimers.forEach(timer => window.clearTimeout(timer));
+        this.renderedTableHighlightTimers = [];
+        document.querySelectorAll('.sidenote-selection-toolbar').forEach(el => el.remove());
+        this.unloadMarkdownRenderComponentsUnder(document.body);
+        document.getElementById("sidenote-dynamic-styles")?.remove();
+        this.editorViews.clear();
+    }
+
     private injectStyles() {
         const styleId = "sidenote-dynamic-styles";
         let styleTag = document.getElementById(styleId);
@@ -2184,18 +2218,23 @@ export default class SideNote extends Plugin {
         const highlightPlugin = ViewPlugin.fromClass(class {
             decorations: DecorationSet;
             view: EditorView;
+            private handleClickBound: (event: MouseEvent) => void;
+            private handleDoubleClickBound: (event: MouseEvent) => void;
+
             constructor(view: EditorView) {
                 this.view = view;
+                this.handleClickBound = this.handleClick.bind(this);
+                this.handleDoubleClickBound = this.handleDoubleClick.bind(this);
                 plugin.editorViews.add(view);
                 this.decorations = this.buildDecorations(view);
                 window.setTimeout(() => plugin.applyRenderedTableHighlights(view), 0);
-                this.view.dom.addEventListener('click', this.handleClick.bind(this));
-                this.view.dom.addEventListener('dblclick', this.handleDoubleClick.bind(this));
+                this.view.dom.addEventListener('click', this.handleClickBound);
+                this.view.dom.addEventListener('dblclick', this.handleDoubleClickBound);
             }
             destroy() { 
                 plugin.editorViews.delete(this.view);
-                this.view.dom.removeEventListener('click', this.handleClick.bind(this));
-                this.view.dom.removeEventListener('dblclick', this.handleDoubleClick.bind(this));
+                this.view.dom.removeEventListener('click', this.handleClickBound);
+                this.view.dom.removeEventListener('dblclick', this.handleDoubleClickBound);
             }
             handleClick(event: MouseEvent) {
                 const target = event.target as HTMLElement;
