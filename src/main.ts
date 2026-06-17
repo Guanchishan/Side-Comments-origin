@@ -813,7 +813,6 @@ export default class SideNote extends Plugin {
     private isSaving: boolean = false;
     private editorViews: Set<EditorView> = new Set();
     private renderedTableHighlightTimers: number[] = [];
-    private modifyUpdateTimers: Map<string, number> = new Map();
     private markdownRenderComponents: Map<HTMLElement, Component> = new Map();
 
     public async renderCommentContent(markdown: string, container: HTMLElement, sourcePath: string) {
@@ -1746,56 +1745,36 @@ export default class SideNote extends Plugin {
                     this.scheduleRenderedTableHighlights();
                 } catch (error) { console.error("Error reloading plugin data:", error); }
             } else if (file instanceof TFile && file.extension === 'md') {
-                this.scheduleCommentCoordinateUpdate(file);
+                try {
+                    // Track orphans before update
+                    const beforeOrphanTimestamps = new Set(
+                        this.commentManager.getCommentsForFile(file.path)
+                            .filter(c => c.isOrphaned)
+                            .map(c => c.timestamp)
+                    );
+
+                    const fileContent = await this.app.vault.read(file);
+                    await this.commentManager.updateCommentCoordinatesForFile(fileContent, file.path);
+                    await this.saveCommentsForSingleFile(file.path);
+                    this.refreshViews();
+                    this.refreshEditorDecorations();
+                    this.scheduleRenderedTableHighlights();
+
+                    // Detect newly orphaned comments
+                    const newOrphans = this.commentManager.getCommentsForFile(file.path)
+                        .filter(c => c.isOrphaned && !beforeOrphanTimestamps.has(c.timestamp));
+                    if (newOrphans.length > 0) {
+                        this.pendingOrphans.push(...newOrphans);
+                        if (this.orphanNoticeTimer) clearTimeout(this.orphanNoticeTimer);
+                        this.orphanNoticeTimer = setTimeout(() => {
+                            const uniqueOrphans = [...new Map(this.pendingOrphans.map(o => [o.timestamp, o])).values()];
+                            this.showOrphanDeletionNotice(uniqueOrphans);
+                            this.pendingOrphans = [];
+                        }, 2000);
+                    }
+                } catch (error) { console.error("Error updating comment coordinates:", error); }
             }
         }));
-    }
-
-    private scheduleCommentCoordinateUpdate(file: TFile) {
-        const filePath = file.path;
-        const existingTimer = this.modifyUpdateTimers.get(filePath);
-        if (existingTimer) window.clearTimeout(existingTimer);
-
-        const timer = window.setTimeout(() => {
-            this.modifyUpdateTimers.delete(filePath);
-            void this.updateCommentCoordinatesForModifiedFile(filePath);
-        }, 800);
-        this.modifyUpdateTimers.set(filePath, timer);
-    }
-
-    private async updateCommentCoordinatesForModifiedFile(filePath: string) {
-        if (this.isSaving) return;
-
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!(file instanceof TFile) || file.extension !== 'md') return;
-
-        try {
-            const beforeOrphanTimestamps = new Set(
-                this.commentManager.getCommentsForFile(file.path)
-                    .filter(c => c.isOrphaned)
-                    .map(c => c.timestamp)
-            );
-
-            const fileContent = await this.app.vault.cachedRead(file);
-            await this.commentManager.updateCommentCoordinatesForFile(fileContent, file.path);
-            await this.saveCommentsForSingleFile(file.path);
-            this.refreshViews();
-            this.refreshEditorDecorations();
-
-            const newOrphans = this.commentManager.getCommentsForFile(file.path)
-                .filter(c => c.isOrphaned && !beforeOrphanTimestamps.has(c.timestamp));
-            if (newOrphans.length > 0) {
-                this.pendingOrphans.push(...newOrphans);
-                if (this.orphanNoticeTimer) clearTimeout(this.orphanNoticeTimer);
-                this.orphanNoticeTimer = setTimeout(() => {
-                    const uniqueOrphans = [...new Map(this.pendingOrphans.map(o => [o.timestamp, o])).values()];
-                    this.showOrphanDeletionNotice(uniqueOrphans);
-                    this.pendingOrphans = [];
-                }, 2000);
-            }
-        } catch (error) {
-            console.error("Error updating comment coordinates:", error);
-        }
     }
 
     onunload() {
@@ -1806,8 +1785,6 @@ export default class SideNote extends Plugin {
         this.pendingOrphans = [];
         this.renderedTableHighlightTimers.forEach(timer => window.clearTimeout(timer));
         this.renderedTableHighlightTimers = [];
-        this.modifyUpdateTimers.forEach(timer => window.clearTimeout(timer));
-        this.modifyUpdateTimers.clear();
         document.querySelectorAll('.sidenote-selection-toolbar').forEach(el => el.remove());
         this.unloadMarkdownRenderComponentsUnder(document.body);
         document.getElementById("sidenote-dynamic-styles")?.remove();
@@ -2005,7 +1982,6 @@ export default class SideNote extends Plugin {
         return ViewPlugin.fromClass(class {
             toolbar: HTMLElement | null = null;
             view: EditorView;
-            private selectionCheckTimer: number | null = null;
             
             constructor(view: EditorView) {
                 this.view = view;
@@ -2013,11 +1989,7 @@ export default class SideNote extends Plugin {
 
             update(update: ViewUpdate) {
                 if (update.selectionSet || update.viewportChanged) {
-                    if (this.selectionCheckTimer) window.clearTimeout(this.selectionCheckTimer);
-                    this.selectionCheckTimer = window.setTimeout(() => {
-                        this.selectionCheckTimer = null;
-                        this.checkSelection();
-                    }, 50);
+                    setTimeout(() => this.checkSelection(), 10);
                 }
             }
 
@@ -2115,10 +2087,6 @@ export default class SideNote extends Plugin {
             }
 
             destroy() {
-                if (this.selectionCheckTimer) {
-                    window.clearTimeout(this.selectionCheckTimer);
-                    this.selectionCheckTimer = null;
-                }
                 this.hideToolbar();
             }
 
