@@ -1732,12 +1732,12 @@ export default class SideNote extends Plugin {
             }
         }));
         this.registerEvent(this.app.vault.on('modify', async (file) => {
-            if (this.isSaving) return;
             // Ignore our own comment data files
             const dataFolder = normalizePath(this.settings.commentsDataFolder?.trim() || DEFAULT_SETTINGS.commentsDataFolder);
             if (file.path.startsWith(dataFolder + '/')) return;
 
             if (file.path === '.obsidian/plugins/side-note/data.json' || (file instanceof TFile && file.name === 'data.json' && file.parent?.name === 'side-note')) {
+                if (this.isSaving) return;
                 try {
                     await this.loadPluginData();
                     this.commentManager.updateComments(this.comments);
@@ -1751,20 +1751,23 @@ export default class SideNote extends Plugin {
         }));
     }
 
-    private scheduleCommentCoordinateUpdate(file: TFile) {
-        const filePath = file.path;
+    private scheduleCommentCoordinateUpdate(file: TFile | string, delay = 800) {
+        const filePath = typeof file === 'string' ? file : file.path;
         const existingTimer = this.modifyUpdateTimers.get(filePath);
         if (existingTimer) window.clearTimeout(existingTimer);
 
         const timer = window.setTimeout(() => {
             this.modifyUpdateTimers.delete(filePath);
             void this.updateCommentCoordinatesForModifiedFile(filePath);
-        }, 800);
+        }, delay);
         this.modifyUpdateTimers.set(filePath, timer);
     }
 
     private async updateCommentCoordinatesForModifiedFile(filePath: string) {
-        if (this.isSaving) return;
+        if (this.isSaving) {
+            this.scheduleCommentCoordinateUpdate(filePath, 250);
+            return;
+        }
 
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!(file instanceof TFile) || file.extension !== 'md') return;
@@ -1776,7 +1779,7 @@ export default class SideNote extends Plugin {
                     .map(c => c.timestamp)
             );
 
-            const fileContent = await this.app.vault.cachedRead(file);
+            const fileContent = await this.app.vault.read(file);
             await this.commentManager.updateCommentCoordinatesForFile(fileContent, file.path);
             await this.saveCommentsForSingleFile(file.path);
             this.refreshViews();
